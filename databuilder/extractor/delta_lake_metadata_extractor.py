@@ -6,7 +6,7 @@ import logging
 from collections import namedtuple
 from datetime import datetime
 from typing import (  # noqa: F401
-    Dict, Iterator, List, Optional, Union,
+    Dict, Iterator, List, Optional, Union, Tuple,
 )
 
 from pyhocon import ConfigFactory, ConfigTree  # noqa: F401
@@ -17,11 +17,14 @@ from pyspark.sql.utils import AnalysisException
 from databuilder.extractor.base_extractor import Extractor
 from databuilder.models.table_last_updated import TableLastUpdated
 from databuilder.models.table_metadata import ColumnMetadata, TableMetadata
+from databuilder.models.watermark import Watermark
 
 TableKey = namedtuple('TableKey', ['schema', 'table_name'])
 
 LOGGER = logging.getLogger(__name__)
 
+HI_WATERMARK = 'high_watermark'
+LO_WATERMARK = 'low_watermark'
 
 # TODO once column tags work properly, consider deprecating this for TableMetadata directly
 class ScrapedColumnMetadata(object):
@@ -55,6 +58,7 @@ class ScrapedTableMetadata(object):
     LAST_MODIFIED_KEY = 'lastModified'
     DESCRIPTION_KEY = 'description'
     TABLE_FORMAT_KEY = 'format'
+    CREATED_AT_KEY = 'createdAt'
 
     def __init__(self, schema: str, table: str):
         self.schema: str = schema
@@ -64,6 +68,7 @@ class ScrapedTableMetadata(object):
         self.is_view: bool = False
         self.failed_to_scrape: bool = False
         self.columns: Optional[List[ScrapedColumnMetadata]] = None
+        self.watermarks = {}
 
     def set_table_detail(self, table_detail: Dict) -> None:
         self.table_detail = table_detail
@@ -90,6 +95,9 @@ class ScrapedTableMetadata(object):
     def set_columns(self, column_list: List[ScrapedColumnMetadata]) -> None:
         self.columns = column_list
 
+    def set_watermark(self, watermark_type, value):
+        self.watermarks[watermark_type] = value
+
     def get_last_modified(self) -> Optional[datetime]:
         details = self.get_details()
         if details and self.LAST_MODIFIED_KEY in details:
@@ -104,12 +112,38 @@ class ScrapedTableMetadata(object):
         else:
             return None
 
+    def get_table_format(self) -> Optional[str]:
+        details = self.get_details()
+        if details and self.TABLE_FORMAT_KEY in details:
+            return details[self.TABLE_FORMAT_KEY].lower()
+        else:
+            return None
+
+    def get_created_at(self) -> Optional[str]:
+        details = self.get_details()
+        if details and self.CREATED_AT_KEY in details:
+            return details[self.CREATED_AT_KEY]
+        else:
+            return None
+
+    def get_watermark(self, watermark_type) -> Optional[str]:
+        if watermark_type in self.watermarks:
+            return self.watermarks[watermark_type]
+        else:
+            return None
+
     def is_delta_table(self) -> bool:
         details = self.get_details()
         if details and self.TABLE_FORMAT_KEY in details:
             return details[self.TABLE_FORMAT_KEY].lower() == 'delta'
         else:
             return False
+
+    def get_date_partition(self) -> Optional[ScrapedColumnMetadata]:
+        for col in self.columns:
+            if col.is_partition and col.data_type.lower() == 'date':
+                return col
+        return None
 
     def __repr__(self) -> str:
         return f'{self.schema}.{self.table}'
@@ -148,7 +182,7 @@ class DeltaLakeMetadataExtractor(Extractor):
     def set_spark(self, spark: SparkSession) -> None:
         self.spark = spark
 
-    def extract(self) -> Union[TableMetadata, TableLastUpdated, None]:
+    def extract(self) -> Union[TableMetadata, TableLastUpdated, Watermark, None]:
         if not self._extract_iter:
             self._extract_iter = self._get_extract_iter()
         try:
@@ -159,13 +193,14 @@ class DeltaLakeMetadataExtractor(Extractor):
     def get_scope(self) -> str:
         return 'extractor.delta_lake_table_metadata'
 
-    def _get_extract_iter(self) -> Iterator[Union[TableMetadata, TableLastUpdated, None]]:
+    def _get_extract_iter(self) -> Iterator[Union[TableMetadata, TableLastUpdated, Watermark, None]]:
         """
         Given either a list of schemas, or a list of exclude schemas,
         it will query hive metastore and then access delta log
         to get all of the metadata for your delta tables. It will produce:
          - table and column metadata
          - last updated information
+         - high and low watermarks
         """
         if self.schema_list:
             LOGGER.info("working on %s", self.schema_list)
@@ -190,6 +225,12 @@ class DeltaLakeMetadataExtractor(Extractor):
                 last_updated = self.create_table_last_updated(scraped_table)
                 if last_updated:
                     yield last_updated
+                high_watermark = self.create_table_watermark(scraped_table, HI_WATERMARK)
+                if high_watermark:
+                    yield high_watermark
+                low_watermark = self.create_table_watermark(scraped_table, LO_WATERMARK)
+                if low_watermark:
+                    yield low_watermark
 
     def get_schemas(self, exclude_list: List[str]) -> List[str]:
         '''Returns all schemas.'''
@@ -239,13 +280,21 @@ class DeltaLakeMetadataExtractor(Extractor):
             else:
                 LOGGER.info("Successfully parsed view " + table_name)
                 met.set_view_detail(view_detail)
+
         columns = self.fetch_columns(met.schema, met.table)
         if not columns:
             LOGGER.error("Failed to parse columns for " + table_name)
             return None
         else:
             met.set_columns(columns)
-            return met
+
+        watermarks = self.fetch_watermarks(met)
+        if watermarks:
+            LOGGER.info("Successfully fetched watermarks for " + table_name)
+            met.set_watermark(LO_WATERMARK, watermarks[0])
+            met.set_watermark(HI_WATERMARK, watermarks[1])
+
+        return met
 
     def scrape_table_detail(self, table_name: str) -> Optional[Dict]:
         try:
@@ -311,6 +360,27 @@ class DeltaLakeMetadataExtractor(Extractor):
                     parsed_columns[row['col_name']].set_is_partition(True)
         return list(parsed_columns.values())
 
+    def fetch_watermarks(self, met) -> Optional[Tuple[str, str]]:
+        date_partition = met.get_date_partition()
+        if date_partition:
+            table_name = met.get_full_table_name()
+            table_format = met.get_table_format()
+            partitions = self.spark.sql(f"show partitions {table_name}")
+            if table_format == 'delta':
+                low_watermark = partitions.agg({date_partition.name: 'min'}).first()[0]
+                high_watermark = partitions.agg({date_partition.name: 'max'}).first()[0]
+                return f"{date_partition.name}={low_watermark}", f"{date_partition.name}={high_watermark}"
+            elif table_format == 'hive':
+                low_watermark = partitions.agg({"partition": 'min'}).first()[0]
+                high_watermark = partitions.agg({"partition": 'max'}).first()[0]
+                return low_watermark, high_watermark
+            else:
+                LOGGER.warning(f"Unsupported table format: {table_format} for table: {met}")
+                return None
+        else:
+            LOGGER.warning(f"No partition with data type: 'date' for table: {met}")
+            return None
+
     def create_table_metadata(self, table: ScrapedTableMetadata) -> TableMetadata:
         '''Creates the amundsen table metadata object from the ScrapedTableMetadata object.'''
         amundsen_columns = []
@@ -323,7 +393,8 @@ class DeltaLakeMetadataExtractor(Extractor):
                                    sort_order=column.sort_order)
                 )
         description = table.get_table_description()
-        return TableMetadata(self._db,
+        format = table.get_table_format()
+        return TableMetadata(format if format is not None else self._db,
                              self._cluster,
                              table.schema,
                              table.table,
@@ -334,11 +405,29 @@ class DeltaLakeMetadataExtractor(Extractor):
     def create_table_last_updated(self, table: ScrapedTableMetadata) -> Optional[TableLastUpdated]:
         '''Creates the amundsen table last updated metadata object from the ScrapedTableMetadata object.'''
         last_modified = table.get_last_modified()
+        if not last_modified:
+            last_modified = table.get_created_at()
+        format = table.get_table_format()
         if last_modified:
             return TableLastUpdated(table_name=table.table,
                                     last_updated_time_epoch=int(last_modified.timestamp()),
                                     schema=table.schema,
-                                    db=self._db,
+                                    db=format if format is not None else self._db,
                                     cluster=self._cluster)
+        else:
+            return None
+    
+    def create_table_watermark(self, table, watermark_type):
+        '''Creates the amundsen watermark metadata object from the ScrapedTableMetadata object.'''
+        created_at = table.get_created_at()
+        watermark = table.get_watermark(watermark_type)
+        format = table.get_table_format()
+        if created_at and watermark:
+            return Watermark(create_time=created_at,
+                            database=format if format is not None else self._db,
+                            schema=table.schema,
+                            table_name=table.table,
+                            part_name=watermark,
+                            part_type=watermark_type)
         else:
             return None

@@ -73,7 +73,7 @@ all_deps = requirements + kafka + cassandra + glue + snowflake + athena + \
     bigquery + jsonpath + db2 + dremio + druid + spark + feast
 
 setup(
-    name='amundsen-databuilder',
+    name='amundsen-databuilder-atvi',
     version=__version__,
     description='Amundsen Data builder',
     url='https://www.github.com/amundsen-io/amundsendatabuilder',
