@@ -15,6 +15,7 @@ from pyspark.sql.catalog import Table
 from pyspark.sql.utils import AnalysisException
 
 from databuilder.extractor.base_extractor import Extractor
+from databuilder.extractor.table_metadata_constants import PARTITION_BADGE
 from databuilder.models.table_last_updated import TableLastUpdated
 from databuilder.models.table_metadata import ColumnMetadata, TableMetadata
 from databuilder.models.watermark import Watermark
@@ -386,12 +387,14 @@ class DeltaLakeMetadataExtractor(Extractor):
         amundsen_columns = []
         if table.columns:
             for column in table.columns:
+                badges = [PARTITION_BADGE] if column.is_partition else None
                 amundsen_columns.append(
                     ColumnMetadata(name=column.name,
-                                   description=column.description,
-                                   col_type=column.data_type,
-                                   sort_order=column.sort_order)
-                )
+                                description=column.description,
+                                col_type=column.data_type,
+                                sort_order=column.sort_order,
+                                badges=badges)
+                    )
         description = table.get_table_description()
         format = table.get_table_format()
         return TableMetadata(format if format is not None else self._db,
