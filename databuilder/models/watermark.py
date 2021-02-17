@@ -48,6 +48,11 @@ class Watermark(GraphSerializable):
         self._node_iter = iter(self.create_nodes())
         self._relation_iter = iter(self.create_relation())
 
+    def __repr__(self) -> str:
+        return f"Watermark(create_time={str(self.create_time)!r}, database={self.database!r}, " \
+               f"schema={self.schema!r}, table={self.table!r}, parts={self.parts!r}, " \
+               f"part_type={self.part_type!r})"
+
     def create_next_node(self) -> Union[GraphNode, None]:
         # return the string representation of the data
         try:

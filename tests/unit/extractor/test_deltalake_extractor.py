@@ -51,6 +51,10 @@ class TestDeltaLakeExtractor(unittest.TestCase):
                        "test_schema1.test_table3 (c boolean, d float) using delta partitioned by (c)")
         self.spark.sql("create table if not exists test_schema2.test_parquet (a string) using parquet")
         self.spark.sql("create table if not exists test_schema2.test_table2 (a2 string, b2 double) using delta")
+        self.spark.sql("create table if not exists "
+                       "test_schema2.test_parquet2 (s string, dt date) using parquet partitioned by (dt)")
+        self.spark.sql("insert into test_schema2.test_parquet2 partition (dt='2020-01-01') values ('foo')")
+        self.spark.sql("insert into test_schema2.test_parquet2 partition (dt='2020-12-31') values ('bar')")
         # TODO do we even need to support views and none delta tables in this case?
         self.spark.sql("create view if not exists test_schema2.test_view1 as (select * from test_schema2.test_table2)")
 
@@ -170,7 +174,7 @@ class TestDeltaLakeExtractor(unittest.TestCase):
         while data is not None:
             ret.append(data)
             data = self.dExtractor.extract()
-        self.assertEqual(len(ret), 8)
+        self.assertEqual(len(ret), 13)
 
     def test_extract_with_only_specific_schemas(self) -> None:
         self.config_dict = {

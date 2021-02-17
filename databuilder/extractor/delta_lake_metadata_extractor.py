@@ -371,13 +371,10 @@ class DeltaLakeMetadataExtractor(Extractor):
                 low_watermark = partitions.agg({date_partition.name: 'min'}).first()[0]
                 high_watermark = partitions.agg({date_partition.name: 'max'}).first()[0]
                 return f"{date_partition.name}={low_watermark}", f"{date_partition.name}={high_watermark}"
-            elif table_format == 'hive':
+            else:
                 low_watermark = partitions.agg({"partition": 'min'}).first()[0]
                 high_watermark = partitions.agg({"partition": 'max'}).first()[0]
                 return low_watermark, high_watermark
-            else:
-                LOGGER.warning(f"Unsupported table format: {table_format} for table: {met}")
-                return None
         else:
             LOGGER.warning(f"No partition with data type: 'date' for table: {met}")
             return None
@@ -419,7 +416,7 @@ class DeltaLakeMetadataExtractor(Extractor):
                                     cluster=self._cluster)
         else:
             return None
-    
+
     def create_table_watermark(self, table, watermark_type):
         '''Creates the amundsen watermark metadata object from the ScrapedTableMetadata object.'''
         created_at = table.get_created_at()

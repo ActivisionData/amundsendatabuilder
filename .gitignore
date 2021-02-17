@@ -20,3 +20,6 @@ venv3/
 .pytest_cache
 **/coverage.xml
 **/htmlcov/**
+*TemporaryDirectory*
+metastore_db/
+derby.log
