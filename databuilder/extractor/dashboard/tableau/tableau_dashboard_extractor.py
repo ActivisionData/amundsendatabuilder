@@ -37,9 +37,13 @@ class TableauGraphQLApiMetadataExtractor(TableauGraphQLApiExtractor):
 
         workbooks_data = [workbook for workbook in response['workbooks']
                           if workbook['projectName'] not in
-                          self._conf.get_list(TableauGraphQLApiMetadataExtractor.EXCLUDED_PROJECTS)]
+                          self._conf.get_list(TableauGraphQLApiMetadataExtractor.EXCLUDED_PROJECTS, [])]
         base_url = self._conf.get(TableauGraphQLApiMetadataExtractor.TABLEAU_BASE_URL)
         for workbook in workbooks_data:
+            if None in (workbook['projectName'], workbook['name']):
+                LOGGER.warning(f'Ignoring workbook (ID:{workbook["vizportalUrlId"]}) ' +
+                               f'in project (ID:{workbook["projectVizportalUrlId"]}) because of a lack of permission')
+                continue
             data = {
                 'dashboard_group': workbook['projectName'],
                 'dashboard_name': TableauDashboardUtils.sanitize_workbook_name(workbook['name']),
@@ -110,7 +114,7 @@ class TableauDashboardExtractor(Extractor):
         if not record:
             return None
 
-        return self._transformer.transform(record=record)
+        return next(self._transformer.transform(record=record), None)
 
     def get_scope(self) -> str:
         return 'extractor.tableau_dashboard_metadata'

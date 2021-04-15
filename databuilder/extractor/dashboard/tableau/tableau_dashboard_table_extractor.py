@@ -38,7 +38,7 @@ class TableauGraphQLDashboardTableExtractor(TableauGraphQLApiExtractor):
 
         workbooks_data = [workbook for workbook in response['workbooks']
                           if workbook['projectName'] not in
-                          self._conf.get_list(TableauGraphQLDashboardTableExtractor.EXCLUDED_PROJECTS)]
+                          self._conf.get_list(TableauGraphQLDashboardTableExtractor.EXCLUDED_PROJECTS, [])]
 
         for workbook in workbooks_data:
             data = {
@@ -137,7 +137,7 @@ class TableauDashboardTableExtractor(Extractor):
         if not record:
             return None
 
-        return self._transformer.transform(record=record)
+        return next(self._transformer.transform(record=record), None)
 
     def get_scope(self) -> str:
         return 'extractor.tableau_dashboard_table'

@@ -4,7 +4,7 @@
 
 from setuptools import find_packages, setup
 
-__version__ = '4.0.4'
+__version__ = '4.2.0'
 
 
 requirements = [
@@ -38,7 +38,7 @@ athena = ['PyAthena[SQLAlchemy]>=1.0.0, <2.0.0']
 # Upstream url: https://github.com/googleapis/google-api-python-client
 bigquery = [
     'google-api-python-client>=1.6.0, <2.0.0dev',
-    'google-auth-httplib2>=0.0.1'
+    'google-auth-httplib2>=0.0.1',
     'google-auth>=1.0.0, <2.0.0dev'
 ]
 
@@ -61,6 +61,16 @@ spark = [
     'pyspark == 3.0.1'
 ]
 
+neptune = [
+    'amundsen-gremlin>=0.0.5',
+    'Flask==1.0.2',
+    'gremlinpython==3.4.3',
+    'requests-aws4auth==0.9',
+    'typing-extensions==3.7.4',
+    'overrides==2.5',
+    'boto3==1.10.1'
+]
+
 feast = [
     'feast==0.8.0'
 ]
@@ -70,7 +80,7 @@ atlas = [
 ]
 
 all_deps = requirements + kafka + cassandra + glue + snowflake + athena + \
-    bigquery + jsonpath + db2 + dremio + druid + spark + feast
+    bigquery + jsonpath + db2 + dremio + druid + spark + feast + neptune
 
 setup(
     name='amundsen-databuilder-atvi',
@@ -95,6 +105,7 @@ setup(
         'db2': db2,
         'dremio': dremio,
         'druid': druid,
+        'neptune': neptune,
         'delta': spark,
         'feast': feast,
         'atlas': atlas

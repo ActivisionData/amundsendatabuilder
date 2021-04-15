@@ -36,9 +36,13 @@ class TableauGraphQLApiLastModifiedExtractor(TableauGraphQLApiExtractor):
 
         workbooks_data = [workbook for workbook in response['workbooks']
                           if workbook['projectName'] not in
-                          self._conf.get_list(TableauGraphQLApiLastModifiedExtractor.EXCLUDED_PROJECTS)]
+                          self._conf.get_list(TableauGraphQLApiLastModifiedExtractor.EXCLUDED_PROJECTS, [])]
 
         for workbook in workbooks_data:
+            if None in (workbook['projectName'], workbook['name']):
+                LOGGER.warning(f'Ignoring workbook (ID:{workbook["vizportalUrlId"]}) ' +
+                               f'in project (ID:{workbook["projectVizportalUrlId"]}) because of a lack of permission')
+                continue
             data = {
                 'dashboard_group_id': workbook['projectName'],
                 'dashboard_id': TableauDashboardUtils.sanitize_workbook_name(workbook['name']),
@@ -73,6 +77,8 @@ class TableauDashboardLastModifiedExtractor(Extractor):
                 name
                 projectName
                 updatedAt
+                projectVizportalUrlId
+                vizportalUrlId
             }
         }"""
 
@@ -100,7 +106,7 @@ class TableauDashboardLastModifiedExtractor(Extractor):
         if not record:
             return None
 
-        return self._transformer.transform(record=record)
+        return next(self._transformer.transform(record=record), None)
 
     def get_scope(self) -> str:
         return 'extractor.tableau_dashboard_last_modified'
