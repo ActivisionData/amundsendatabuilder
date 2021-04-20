@@ -4,7 +4,7 @@
 import concurrent.futures
 import logging
 from collections import namedtuple
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import (  # noqa: F401
     Dict, Iterator, List, Optional, Union, Tuple,
 )
@@ -70,6 +70,7 @@ class ScrapedTableMetadata(object):
         self.failed_to_scrape: bool = False
         self.columns: Optional[List[ScrapedColumnMetadata]] = None
         self.watermarks = {}
+        self.schema_history: Optional[List] = None
 
     def set_table_detail(self, table_detail: Dict) -> None:
         self.table_detail = table_detail
@@ -98,6 +99,9 @@ class ScrapedTableMetadata(object):
 
     def set_watermark(self, watermark_type, value):
         self.watermarks[watermark_type] = value
+
+    def set_schema_history(self, schema_history):
+        self.schema_history = schema_history
 
     def get_last_modified(self) -> Optional[datetime]:
         details = self.get_details()
@@ -133,6 +137,12 @@ class ScrapedTableMetadata(object):
         else:
             return None
 
+    def get_schema_history(self):
+        if self.schema_history:
+            return self.schema_history
+        else:
+            return None
+
     def is_delta_table(self) -> bool:
         details = self.get_details()
         if details and self.TABLE_FORMAT_KEY in details:
@@ -165,10 +175,14 @@ class DeltaLakeMetadataExtractor(Extractor):
     CLUSTER_KEY = "cluster"
     # By default, this will only process and emit delta-lake tables, but it can support all hive table types.
     DELTA_TABLES_ONLY = "delta_tables_only"
+    SCHEMA_HISTORY_TABLE_KEY = "schema_history_table"
+    SCHEMA_REGISTRY_URL_KEY = "schema_registry_url"
     DEFAULT_CONFIG = ConfigFactory.from_dict({DATABASE_KEY: "delta",
                                               EXCLUDE_LIST_SCHEMAS_KEY: [],
                                               SCHEMA_LIST_KEY: [],
-                                              DELTA_TABLES_ONLY: True})
+                                              DELTA_TABLES_ONLY: True,
+                                              SCHEMA_HISTORY_TABLE_KEY: "schema_history",
+                                              SCHEMA_REGISTRY_URL_KEY: "schema-registry"})
     PARTITION_COLUMN_TAG = 'is_partition'
 
     def init(self, conf: ConfigTree) -> None:
@@ -179,6 +193,8 @@ class DeltaLakeMetadataExtractor(Extractor):
         self.exclude_list = self.conf.get_list(DeltaLakeMetadataExtractor.EXCLUDE_LIST_SCHEMAS_KEY)
         self.schema_list = self.conf.get_list(DeltaLakeMetadataExtractor.SCHEMA_LIST_KEY)
         self.delta_tables_only = self.conf.get_bool(DeltaLakeMetadataExtractor.DELTA_TABLES_ONLY)
+        self.schema_history_table = self.conf.get_string(DeltaLakeMetadataExtractor.SCHEMA_HISTORY_TABLE_KEY)
+        self.schema_registry_url = self.conf.get_string(DeltaLakeMetadataExtractor.SCHEMA_REGISTRY_URL_KEY)
 
     def set_spark(self, spark: SparkSession) -> None:
         self.spark = spark
@@ -213,7 +229,6 @@ class DeltaLakeMetadataExtractor(Extractor):
             LOGGER.info("working on %s", schemas)
             tables = self.get_all_tables(schemas)
         # TODO add the programmatic information as well?
-        # TODO add watermarks
         scraped_tables = self.scrape_all_tables(tables)
         for scraped_table in scraped_tables:
             if not scraped_table:
@@ -232,6 +247,9 @@ class DeltaLakeMetadataExtractor(Extractor):
                 low_watermark = self.create_table_watermark(scraped_table, LO_WATERMARK)
                 if low_watermark:
                     yield low_watermark
+                schema_history = self.create_schema_history(scraped_table)
+                if schema_history:
+                    yield schema_history
 
     def get_schemas(self, exclude_list: List[str]) -> List[str]:
         '''Returns all schemas.'''
@@ -272,6 +290,13 @@ class DeltaLakeMetadataExtractor(Extractor):
             else:
                 LOGGER.info("Successfully parsed table " + table_name)
                 met.set_table_detail(table_detail)
+                if '_dev' in table.database: # TODO: Remove later to support all schemas
+                    schema_history = self.fetch_schema_history(table_name)
+                    if schema_history is None:
+                        LOGGER.warning("Failed to fetch schema history for table " + table_name)
+                    else:
+                        LOGGER.info("Successfully fetched schema history for table " + table_name)
+                        met.set_schema_history(schema_history)
         else:
             view_detail = self.scrape_view_detail(table_name)
             if view_detail is None:
@@ -302,6 +327,17 @@ class DeltaLakeMetadataExtractor(Extractor):
             table_details_df = self.spark.sql(f"describe detail {table_name}")
             table_detail = table_details_df.collect()[0]
             return table_detail.asDict()
+        except Exception as e:
+            LOGGER.error(e)
+            return None
+
+    def fetch_schema_history(self, table_name: str) -> Optional[List]:
+        schema_history = []
+        try:
+            results = self.spark.sql(f"select * from {self.schema_history_table} WHERE table_name = '{table_name}'").collect()
+            for result in results:
+                schema_history.append(result.asDict())
+            return schema_history
         except Exception as e:
             LOGGER.error(e)
             return None
@@ -429,5 +465,33 @@ class DeltaLakeMetadataExtractor(Extractor):
                             table_name=table.table,
                             part_name=watermark,
                             part_type=watermark_type)
+        else:
+            return None
+
+    def create_schema_history(self, table: ScrapedTableMetadata) -> TableMetadata:
+        '''Creates an amundsen table metadata object with a programmatic description containing the schema history.'''
+        database = table.get_table_format()
+        if database is None:
+            database = self._db
+        
+        schema_history = table.get_schema_history()
+        if schema_history:
+            programmatic_description = ""
+            for entry in schema_history:
+                last_seen_datetime = datetime.fromtimestamp(entry['last_seen_ts'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
+                schema_guid = entry['schema_guid']
+                if schema_guid == 'unknown':
+                    programmatic_description += f"**Schema GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}"
+                else:
+                    guid_link = f"{self.schema_registry_url}/guid/{schema_guid}"
+                    programmatic_description += f"**Schema GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}"
+    
+            return TableMetadata(database=database,
+                                cluster=self._cluster,
+                                schema=table.schema,
+                                name=table.table,
+                                description=programmatic_description,
+                                description_source='schema_tracker')
+
         else:
             return None

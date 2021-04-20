@@ -5,6 +5,7 @@ import logging
 import tempfile
 import unittest
 from typing import Dict
+import datetime
 
 from pyhocon import ConfigFactory
 # patch whole class to avoid actually calling for boto3.client during tests
@@ -33,9 +34,11 @@ class TestDeltaLakeExtractor(unittest.TestCase):
         self.config_dict = {
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.CLUSTER_KEY}': 'test_cluster',
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.SCHEMA_LIST_KEY}': [],
-            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.EXCLUDE_LIST_SCHEMAS_KEY}': [],
+            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.EXCLUDE_LIST_SCHEMAS_KEY}': ['util'],
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.DATABASE_KEY}': 'test_database',
-            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.DELTA_TABLES_ONLY}': False
+            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.DELTA_TABLES_ONLY}': False,
+            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.SCHEMA_HISTORY_TABLE_KEY}': 'util.schema_history',
+            f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.SCHEMA_REGISTRY_URL_KEY}': 'test-schema-registry'
         }
         conf = ConfigFactory.from_dict(self.config_dict)
         self.dExtractor = DeltaLakeMetadataExtractor()
@@ -46,6 +49,7 @@ class TestDeltaLakeExtractor(unittest.TestCase):
     def setUpSchemas(self) -> None:
         self.spark.sql("create schema if not exists test_schema1")
         self.spark.sql("create schema if not exists test_schema2")
+        self.spark.sql("create schema if not exists util")
         self.spark.sql("create table if not exists test_schema1.test_table1 (a string, b int) using delta")
         self.spark.sql("create table if not exists "
                        "test_schema1.test_table3 (c boolean, d float) using delta partitioned by (c)")
@@ -57,16 +61,19 @@ class TestDeltaLakeExtractor(unittest.TestCase):
         self.spark.sql("insert into test_schema2.test_parquet2 partition (dt='2020-12-31') values ('bar')")
         # TODO do we even need to support views and none delta tables in this case?
         self.spark.sql("create view if not exists test_schema2.test_view1 as (select * from test_schema2.test_table2)")
+        self.spark.sql("create table if not exists "
+                       "util.schema_history (table_name string, schema_guid string, last_seen_ts double, dt date) using delta partitioned by (dt)")
+        self.spark.sql("insert into util.schema_history values ('test_schema1.test_table1', 'testguid123', 1577836800.0, '2020-01-01')")
 
     def test_get_all_schemas(self) -> None:
         '''Tests getting all schemas'''
         actual_schemas = self.dExtractor.get_schemas([])
-        self.assertEqual(["default", "test_schema1", "test_schema2"], actual_schemas)
+        self.assertEqual(["default", "test_schema1", "test_schema2", "util"], actual_schemas)
 
     def test_get_all_schemas_with_exclude(self) -> None:
         '''Tests the exclude list'''
         actual_schemas = self.dExtractor.get_schemas(["default"])
-        self.assertEqual(["test_schema1", "test_schema2"], actual_schemas)
+        self.assertEqual(["test_schema1", "test_schema2", "util"], actual_schemas)
 
     def test_get_all_tables(self) -> None:
         '''Tests table fetching'''
@@ -94,6 +101,25 @@ class TestDeltaLakeExtractor(unittest.TestCase):
             self.assertEqual(actual.keys(), expected.keys())
             self.assertEqual(actual['name'], expected['name'])
             self.assertEqual(actual['format'], expected['format'])
+
+    def test_fetch_schema_history(self) -> None:
+        '''Test Schema History Fetching'''
+        actual = self.dExtractor.fetch_schema_history("test_schema1.test_table1")
+        expected: List = [
+            {
+                'table_name': 'test_schema1.test_table1',
+                'schema_guid': 'testguid123',
+                'last_seen_ts': 1577836800.0,
+                'dt': datetime.date(2020, 1, 1)
+            }
+        ]
+        self.assertIsNotNone(actual)
+        if actual:
+            self.assertEqual(actual[0].keys(), expected[0].keys())
+            self.assertEqual(actual[0]['table_name'], expected[0]['table_name'])
+            self.assertEqual(actual[0]['schema_guid'], expected[0]['schema_guid'])
+            self.assertEqual(actual[0]['last_seen_ts'], expected[0]['last_seen_ts'])
+            self.assertEqual(actual[0]['dt'], expected[0]['dt'])
 
     def test_scrape_view_detail(self) -> None:
         actual = self.dExtractor.scrape_view_detail("test_schema2.test_view1")
@@ -161,6 +187,22 @@ class TestDeltaLakeExtractor(unittest.TestCase):
                                           ColumnMetadata("b", None, "int", 1)])
         self.assertEqual(str(expected), str(created_metadata))
 
+    def test_create_schema_history(self) -> None:
+        scraped = ScrapedTableMetadata(schema="test_schema1", table="test_table1")
+        scraped.set_schema_history([
+            {
+                'table_name': 'test_schema1.test_table1',
+                'schema_guid': 'testguid123',
+                'last_seen_ts': 1577880000.0,
+                'dt': datetime.date(2020, 1, 1)
+            }            
+        ])
+        created_metadata = self.dExtractor.create_schema_history(scraped)
+        expected = TableMetadata("test_database", "test_cluster", "test_schema1", "test_table1", 
+                                 description='**Schema GUID**: [testguid123](test-schema-registry/guid/testguid123), **Last Seen**: 2020-01-01 12:00:00 UTC',
+                                 description_source='schema_tracker')
+        self.assertEqual(str(expected), str(created_metadata))
+
     def test_create_last_updated(self) -> None:
         scraped_table = self.dExtractor.scrape_table(Table("test_table1", "test_schema1", None, "delta", False))
         actual_last_updated = None
@@ -198,7 +240,7 @@ class TestDeltaLakeExtractor(unittest.TestCase):
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.CLUSTER_KEY}': 'test_cluster',
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.SCHEMA_LIST_KEY}': [],
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.EXCLUDE_LIST_SCHEMAS_KEY}':
-                ['test_schema2'],
+                ['test_schema2', 'util'],
             f'extractor.delta_lake_table_metadata.{DeltaLakeMetadataExtractor.DATABASE_KEY}': 'test_database'
         }
         conf = ConfigFactory.from_dict(self.config_dict)
