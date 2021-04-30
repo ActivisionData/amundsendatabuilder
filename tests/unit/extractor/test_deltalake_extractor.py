@@ -115,7 +115,6 @@ class TestDeltaLakeExtractor(unittest.TestCase):
         ]
         self.assertIsNotNone(actual)
         if actual:
-            self.assertEqual(actual[0].keys(), expected[0].keys())
             self.assertEqual(actual[0]['table_name'], expected[0]['table_name'])
             self.assertEqual(actual[0]['schema_guid'], expected[0]['schema_guid'])
             self.assertEqual(actual[0]['last_seen_ts'], expected[0]['last_seen_ts'])
@@ -199,7 +198,7 @@ class TestDeltaLakeExtractor(unittest.TestCase):
         ])
         created_metadata = self.dExtractor.create_schema_history(scraped)
         expected = TableMetadata("test_database", "test_cluster", "test_schema1", "test_table1", 
-                                 description='**Schema GUID**: [testguid123](test-schema-registry/guid/testguid123), **Last Seen**: 2020-01-01 12:00:00 UTC',
+                                 description='**Schema GUID**: [testguid123](test-schema-registry/guid/testguid123), **Last Seen**: 2020-01-01 12:00:00 UTC\n',
                                  description_source='schema_tracker')
         self.assertEqual(str(expected), str(created_metadata))
 

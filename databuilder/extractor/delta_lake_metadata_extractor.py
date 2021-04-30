@@ -334,7 +334,15 @@ class DeltaLakeMetadataExtractor(Extractor):
     def fetch_schema_history(self, table_name: str) -> Optional[List]:
         schema_history = []
         try:
-            results = self.spark.sql(f"select * from {self.schema_history_table} WHERE table_name = '{table_name}'").collect()
+            query = ( "SELECT * "
+                      "FROM (SELECT table_name, schema_guid, last_seen_ts, dt, "
+                      "             ROW_NUMBER() OVER (PARTITION BY schema_guid ORDER BY last_seen_ts DESC) AS RowNumber "
+                     f"      FROM {self.schema_history_table} "
+                     f"      WHERE table_name = '{table_name}') AS a "
+                      "WHERE a.RowNumber = 1 "
+                      "ORDER BY last_seen_ts DESC "
+                      "LIMIT 5")
+            results = self.spark.sql(query).collect()
             for result in results:
                 schema_history.append(result.asDict())
             return schema_history
@@ -481,10 +489,10 @@ class DeltaLakeMetadataExtractor(Extractor):
                 last_seen_datetime = datetime.fromtimestamp(entry['last_seen_ts'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
                 schema_guid = entry['schema_guid']
                 if schema_guid == 'unknown':
-                    programmatic_description += f"**Schema GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}"
+                    programmatic_description += f"**Schema GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}\n"
                 else:
                     guid_link = f"{self.schema_registry_url}/guid/{schema_guid}"
-                    programmatic_description += f"**Schema GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}"
+                    programmatic_description += f"**Schema GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}\n"
     
             return TableMetadata(database=database,
                                 cluster=self._cluster,
