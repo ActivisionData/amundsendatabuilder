@@ -290,13 +290,12 @@ class DeltaLakeMetadataExtractor(Extractor):
             else:
                 LOGGER.info("Successfully parsed table " + table_name)
                 met.set_table_detail(table_detail)
-                if '_dev' in table.database: # TODO: Remove later to support all schemas
-                    schema_history = self.fetch_schema_history(table_name)
-                    if schema_history is None:
-                        LOGGER.warning("Failed to fetch schema history for table " + table_name)
-                    else:
-                        LOGGER.info("Successfully fetched schema history for table " + table_name)
-                        met.set_schema_history(schema_history)
+                schema_history = self.fetch_schema_history(table_name)
+                if schema_history is None:
+                    LOGGER.warning("Failed to fetch schema history for table " + table_name)
+                else:
+                    LOGGER.info("Successfully fetched schema history for table " + table_name)
+                    met.set_schema_history(schema_history)
         else:
             view_detail = self.scrape_view_detail(table_name)
             if view_detail is None:
@@ -489,10 +488,10 @@ class DeltaLakeMetadataExtractor(Extractor):
                 last_seen_datetime = datetime.fromtimestamp(entry['last_seen_ts'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
                 schema_guid = entry['schema_guid']
                 if schema_guid == 'unknown':
-                    programmatic_description += f"**Schema GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}\n"
+                    programmatic_description += f"**GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}\n"
                 else:
                     guid_link = f"{self.schema_registry_url}/guid/{schema_guid}"
-                    programmatic_description += f"**Schema GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}\n"
+                    programmatic_description += f"**GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}\n"
     
             return TableMetadata(database=database,
                                 cluster=self._cluster,
