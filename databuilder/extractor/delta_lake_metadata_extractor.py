@@ -488,10 +488,10 @@ class DeltaLakeMetadataExtractor(Extractor):
                 last_seen_datetime = datetime.fromtimestamp(entry['last_seen_ts'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
                 schema_guid = entry['schema_guid']
                 if schema_guid == 'unknown':
-                    programmatic_description += f"**GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}\n"
+                    programmatic_description += f"**GUID**: {schema_guid}, **Last Seen**: {last_seen_datetime}  \r"
                 else:
                     guid_link = f"{self.schema_registry_url}/guid/{schema_guid}"
-                    programmatic_description += f"**GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}\n"
+                    programmatic_description += f"**GUID**: [{schema_guid}]({guid_link}), **Last Seen**: {last_seen_datetime}  \r"
     
             return TableMetadata(database=database,
                                 cluster=self._cluster,
